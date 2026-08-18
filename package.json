@@ -1,0 +1,14 @@
+{
+  "name": "volcano-plaud-notion-automation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Sheets read-only source and PLAUD meeting notes to Notion automation",
+  "scripts": {
+    "build": "node build-bundle.js",
+    "test": "node test-local.js",
+    "validate": "npm run build && npm test && node -e \"JSON.parse(require('node:fs').readFileSync('appsscript.json','utf8')); console.log('appsscript.json 확인 완료')\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

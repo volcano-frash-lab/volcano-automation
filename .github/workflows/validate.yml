@@ -1,0 +1,21 @@
+name: Validate Apps Script automation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build and test
+        run: npm run validate
+      - name: Verify generated bundle is committed
+        run: git diff --exit-code -- VolcanoAutomation.bundle.gs

@@ -1,0 +1,22 @@
+# Local credentials and runtime configuration
+.clasp.json
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+*.pem
+*.key
+
+# Local tooling
+node_modules/
+.DS_Store
+*.log
+
+# Editors and agent-local state
+.idea/
+.vscode/
+.orca/
+.claude/
+.antigravity/
+.agent-output/
