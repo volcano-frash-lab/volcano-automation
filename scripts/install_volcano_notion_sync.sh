@@ -26,6 +26,10 @@ plistbuddy_bin="/usr/libexec/PlistBuddy"
 
 validate_launch_agent() {
   if [[ ! -f "$LAUNCH_AGENT_PLIST" ]]; then
+    if (( DRY_RUN )) && [[ "${CI:-}" == "true" ]]; then
+      echo "[dry-run] CI 환경에는 LaunchAgent plist가 없어 호스트 전용 검사를 건너뜁니다."
+      return 0
+    fi
     echo "LaunchAgent plist가 없습니다: $LAUNCH_AGENT_PLIST" >&2
     return 1
   fi
