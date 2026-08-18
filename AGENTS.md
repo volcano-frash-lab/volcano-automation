@@ -30,6 +30,10 @@
 - Sheets API의 update, append, batchUpdate 계열과 SpreadsheetApp 쓰기 메서드를 사용하지 않는다.
 - appsscript.json에는 spreadsheets.readonly OAuth scope만 유지하고 광범위한 spreadsheets 읽기·쓰기 scope를 추가하지 않는다.
 - 현재 원장 조회는 OAuth 토큰과 Sheets API values:batchGet 방식이다.
+- OpenAI API 키/모델은 앱 설정에서 더 이상 요구하지 않으며, 트리거 처리 자동 실행도 Apps Script에서 종료한다.
+
+external plaud_telegram_runtime.py -> analyze_codex / plaud_codex_agent.py via Codex CLI logged into a ChatGPT subscription -> private ledger analysis_summary -> repo volcano_notion_sync.py -> Notion.
+The state producer is external to this repo. Apps Script is inert/manual, installs no triggers, and requires only NOTION_TOKEN in Script Properties.
 
 ### 비밀정보
 
@@ -50,7 +54,7 @@
 ## Apps Script 배포 규칙
 
 - 운영 Apps Script 프로젝트에는 VolcanoAutomation.bundle.gs 내용만 유일한 .gs 코드로 배포한다.
-- Config.gs, Utils.gs, Sheets.gs, Notion.gs, OpenAI.gs, Apply.gs, Sync.gs, Telegram.gs, Core.gs, Tests.gs는 개발용 분리 소스다.
+- Config.gs, Utils.gs, Sheets.gs, Notion.gs, Apply.gs, Sync.gs, Telegram.gs, Core.gs, Tests.gs는 개발용 분리 소스다.
 - 번들과 분리형 .gs를 함께 배포하면 전역 선언이 중복되므로 절대 함께 올리지 않는다.
 - appsscript.json은 코드 번들과 별도의 매니페스트로 적용한다.
 - 분리형 소스가 변경되면 최종 배포 전에 번들을 다시 생성하고, 각 분리 파일이 정확히 한 번 포함됐는지 검증한다.

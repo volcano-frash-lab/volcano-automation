@@ -12,106 +12,7 @@ const PLAUD_ERROR_RETRY_MAX_MS_ = 24 * 60 * 60 * 1000;
 const PLAUD_CHECKPOINT_OVERLAP_MS_ = 1;
 
 function pollPlaudChanges() {
-  const deadlineMs = Date.now() + PLAUD_RUN_LIMIT_MS_;
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) return;
-  setNotionRunDeadline_(deadlineMs);
-  try {
-    validateSettings_();
-    const props = PropertiesService.getScriptProperties();
-    const state = loadPlaudSyncState_(props);
-    const reports = [];
-    let processedCount = 0;
-    let inspectedCount = 0;
-    let sourceData = null;
-
-    migratePendingPlaudWaiters_(state, props);
-    restoreDuePlaudWaiters_(state, props, PLAUD_MAX_WAITERS_RESTORED_PER_RUN_);
-    scanPlaudCandidates_(state, props, deadlineMs);
-    sortPendingPlaud_(state.pending);
-
-    let index = 0;
-    while (
-      index < state.pending.length &&
-      processedCount < PLAUD_MAX_PROCESSED_PER_RUN_ &&
-      inspectedCount < PLAUD_MAX_CANDIDATES_PER_RUN_
-    ) {
-      if (!hasPlaudRunTime_(deadlineMs, PLAUD_RECORD_START_RESERVE_MS_)) break;
-      const pending = state.pending[index];
-      if (pending.retryAfter && Number(pending.retryAfter) > Date.now()) {
-        index++;
-        continue;
-      }
-
-      inspectedCount++;
-      try {
-        const record = readPlaudRecord_(pending, deadlineMs);
-        if (comparePlaudCheckpoint_(
-          { lastEditedAt: record.lastEditedAt, pageId: record.id },
-          { lastEditedAt: pending.lastEditedAt, pageId: pending.id }
-        ) > 0) {
-          pending.lastEditedAt = record.lastEditedAt;
-        }
-
-        if (!record.ready || !record.text || record.text.length < 40) {
-          parkPlaudPending_(state, props, index, Object.assign({}, pending, {
-            status: 'waiting',
-            reason: record.pendingReason || (!record.text ? '회의 내용이 비어 있습니다.' : '회의 내용이 너무 짧습니다.'),
-            retryAfter: Date.now() + PLAUD_PENDING_RETRY_MS_,
-            readinessChecks: Number(pending.readinessChecks || 0) + 1,
-            lastAttemptAt: isoNow_()
-          }));
-          continue;
-        }
-
-        const digest = hashText_([record.title, record.text, record.lastEditedAt].join('|'));
-        if (isProcessed_(record.id, digest)) {
-          deletePlaudWaiter_(props, pending.id);
-          state.pending.splice(index, 1);
-          savePlaudSyncState_(props, state);
-          continue;
-        }
-
-        if (!sourceData) sourceData = readSourceData_();
-        const analysis = analyzeMeeting_(record, sourceData);
-        const report = applyAnalysis_(record, analysis, sourceData);
-        rememberProcessed_(record.id, digest);
-        reports.push(formatReport_(report, record.title));
-        deletePlaudWaiter_(props, pending.id);
-        state.pending.splice(index, 1);
-        savePlaudSyncState_(props, state);
-        processedCount++;
-      } catch (error) {
-        if (error && error.code === 'PLAUD_DEADLINE') throw error;
-        const attempts = Number(pending.attempts || 0) + 1;
-        const status = Number(error && error.httpStatus || 0);
-        const message = String(error && (error.message || error) || '알 수 없는 PLAUD 처리 오류').slice(0, 500);
-        parkPlaudPending_(state, props, index, Object.assign({}, pending, {
-          status: status === 404 ? 'not_found_wait' : 'error_wait',
-          reason: message,
-          attempts: attempts,
-          httpStatus: status || null,
-          lastError: message,
-          lastAttemptAt: isoNow_(),
-          retryAfter: Date.now() + plaudErrorRetryDelay_(attempts, status)
-        }));
-        console.error('PLAUD 후보 격리 ' + pending.id + ' (시도 ' + attempts + '): ' + message);
-      }
-    }
-
-    savePlaudSyncState_(props, state);
-    if (reports.length) sendTelegramReport_(reports.join('\n\n').slice(0, 3900));
-  } catch (error) {
-    if (error && error.code === 'PLAUD_DEADLINE') {
-      console.warn(error.message);
-      return;
-    }
-    console.error(error && error.stack ? error.stack : error);
-    throw error;
-  } finally {
-    clearNotionRunDeadline_();
-    lock.releaseLock();
-  }
+  console.log('pollPlaudChanges는 Mac mini 구독 런타임이 권한합니다. Apps Script는 수동 폴백 모드입니다.');
 }
 
 function hasPlaudRunTime_(deadlineMs, reserveMs) {
@@ -429,11 +330,7 @@ function getProcessedMap_() {
 }
 
 function setupPollingTrigger() {
-  ScriptApp.getProjectTriggers().forEach(function (trigger) {
-    if (trigger.getHandlerFunction() === 'pollPlaudChanges') ScriptApp.deleteTrigger(trigger);
-  });
-  ScriptApp.newTrigger('pollPlaudChanges').timeBased().everyMinutes(15).create();
-  console.log('15분 증분 조회 트리거를 설정했습니다.');
+  setupAutomationTriggers_();
 }
 
 function setupAutomationTriggers() {
@@ -450,29 +347,7 @@ function setupAutomationTriggers_(scriptApp, propertiesService) {
   app.getProjectTriggers().forEach(function (trigger) {
     if (handlers.indexOf(trigger.getHandlerFunction()) >= 0) app.deleteTrigger(trigger);
   });
-  app.newTrigger('pollPlaudChanges').timeBased().everyMinutes(15).create();
-  app.newTrigger('processTelegramQueue').timeBased().everyMinutes(1).create();
-  const weekdays = [
-    app.WeekDay.MONDAY,
-    app.WeekDay.TUESDAY,
-    app.WeekDay.WEDNESDAY,
-    app.WeekDay.THURSDAY,
-    app.WeekDay.FRIDAY
-  ];
-  weekdays.forEach(function (weekday) {
-    app.newTrigger('syncSheetToNotion')
-      .timeBased()
-      .inTimezone(CONFIG.TIMEZONE)
-      .onWeekDay(weekday)
-      .atHour(8)
-      .nearMinute(30)
-      .everyWeeks(1)
-      .create();
-  });
-  if (props && props.getProperty && props.getProperty(SHEET_SYNC_STATE_PROPERTY_)) {
-    scheduleSheetSyncContinuation_();
-  }
-  console.log('PLAUD 15분 증분 조회, Telegram 1분 대기열 처리, 주중 08:30 원장 동기화 트리거를 설정했습니다.');
+  console.log('Mac mini 구독 런타임이 자동 트리거 권한입니다. Apps Script는 수동 폴백 모드로 전환했습니다.');
 }
 
 function getAutomationTriggerInventory() {
@@ -503,7 +378,6 @@ function healthCheck() {
     schedulesRead: sourceData.schedules.length,
     notionBot: notionSelf.name || notionSelf.id,
     notionDataSourcesShared: true,
-    openaiModel: settings.openaiModel,
     sheetWriteMethodsPresent: sourceContainsSheetWrites_()
   };
   console.log(JSON.stringify(result, null, 2));

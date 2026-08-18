@@ -6,7 +6,6 @@ const CONFIG = Object.freeze({
   SCHEDULE_TAB: '_일정통합',
   NOTION_VERSION: '2026-03-11',
   NOTION_API: 'https://api.notion.com/v1',
-  OPENAI_API: 'https://api.openai.com/v1/responses',
   DATABASES: Object.freeze({
     PLAUD: '7c9a94e7-87a0-4bb2-89fb-52f9b0ddf442',
     PROJECTS: '23db7878-81fc-4429-a4e3-97298babf1c8',
@@ -24,21 +23,17 @@ const CONFIG = Object.freeze({
   MAX_WEBHOOK_TEXT_CHARS: 2200,
   MAX_WEBHOOK_QUEUE_ITEMS: 30,
   WEBHOOK_QUEUE_PREFIX: 'TG_QUEUE_',
-  TRAVEL_BUFFER_MINUTES: 90,
-  OPENAI_MODEL_DEFAULT: 'gpt-5.4-nano'
+  TRAVEL_BUFFER_MINUTES: 90
 });
 
 const REQUIRED_SCRIPT_PROPERTIES = Object.freeze([
-  'NOTION_TOKEN',
-  'OPENAI_API_KEY'
+  'NOTION_TOKEN'
 ]);
 
 function getSettings_() {
   const p = PropertiesService.getScriptProperties();
   return {
     notionToken: p.getProperty('NOTION_TOKEN') || '',
-    openaiKey: p.getProperty('OPENAI_API_KEY') || '',
-    openaiModel: p.getProperty('OPENAI_MODEL') || CONFIG.OPENAI_MODEL_DEFAULT,
     telegramBotToken: p.getProperty('TELEGRAM_BOT_TOKEN') || '',
     telegramAllowedChatId: p.getProperty('TELEGRAM_ALLOWED_CHAT_ID') || '',
     webhookKey: p.getProperty('WEBHOOK_KEY') || '',
@@ -50,7 +45,6 @@ function validateSettings_() {
   const settings = getSettings_();
   const missing = [];
   if (!settings.notionToken) missing.push('NOTION_TOKEN');
-  if (!settings.openaiKey) missing.push('OPENAI_API_KEY');
   if (missing.length) throw new Error('Script Properties에 다음 값을 설정하세요: ' + missing.join(', '));
   return settings;
 }

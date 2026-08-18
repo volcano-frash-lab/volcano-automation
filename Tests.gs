@@ -73,6 +73,43 @@ function runUnitTests() {
       assertSheetsAdapterReadOnly_();
     },
     function () {
+      const fakePropertiesService = createFakePropertiesServiceForAutomationTriggers_({
+        NOTION_TOKEN: 'notion-token-1'
+      });
+      withPatchedGlobal_('PropertiesService', fakePropertiesService, function () {
+        const settings = validateSettings_();
+        assertEqual_('notion-token-1', settings.notionToken, 'NOTION_TOKEN only validates');
+      });
+    },
+    function () {
+      let missing = false;
+      withPatchedGlobal_(
+        'PropertiesService',
+        createFakePropertiesServiceForAutomationTriggers_({}),
+        function () {
+          try {
+            validateSettings_();
+          } catch (error) {
+            missing = String(error.message).indexOf('NOTION_TOKEN') >= 0;
+          }
+        }
+      );
+      assertTrue_(missing, 'NOTION_TOKEN is required when no API key/model fallback exists');
+    },
+    function () {
+      const fakePropertiesService = createFakePropertiesServiceForAutomationTriggers_({
+        NOTION_TOKEN: 'notion-token-only',
+        EXTRA_TOKEN: 'should-be-ignored-if-present'
+      });
+      withPatchedGlobal_('PropertiesService', fakePropertiesService, function () {
+        const settings = validateSettings_();
+        assertEqual_('notion-token-only', settings.notionToken, 'notion-token-only mode');
+        assertEqual_('', settings.telegramBotToken, 'telegram token remains optional');
+        assertEqual_('', settings.telegramAllowedChatId, 'telegram id remains optional');
+        assertEqual_('', settings.webhookKey, 'webhook key remains optional');
+      });
+    },
+    function () {
       const a = { lastEditedAt: '2026-08-18T00:00:00.000Z', pageId: 'aaa' };
       const b = { lastEditedAt: '2026-08-18T00:00:00.000Z', pageId: 'bbb' };
       assertTrue_(comparePlaudCheckpoint_(a, b) < 0, 'compound checkpoint page id');
@@ -95,12 +132,10 @@ function runUnitTests() {
     },
     function () {
       const syncSource = String(syncSheetToNotion);
-      assertTrue_(syncSource.indexOf('scheduleSheetSyncContinuation_();') >= 0, 'sync lock continuation');
-      assertTrue_(syncSource.indexOf("const sourceData = readSourceData_();\n    props.deleteProperty(SHEET_SYNC_RETRY_PROPERTY_)") < 0,
-        'retry count must survive until checkpoint progress');
-      const continuationSource = String(scheduleSheetSyncContinuation_);
-      assertTrue_(continuationSource.indexOf('SHEET_SYNC_CONTINUATION_AT_PROPERTY_') >= 0 &&
-        continuationSource.indexOf('triggers.forEach') >= 0, 'leased single continuation trigger');
+      assertTrue_(syncSource.indexOf('return { deferred: true') >= 0, 'sync supports deferred/manual retry');
+      assertTrue_(syncSource.indexOf('ScriptApp.newTrigger') < 0, 'sync does not create triggers');
+      assertTrue_(syncSource.indexOf('scheduleSheetSyncContinuation_') < 0, 'sync has no continuation helper');
+      assertTrue_(syncSource.indexOf('removeSheetSyncContinuationTriggers_') < 0, 'sync has no continuation cleanup helper');
     },
     function () {
       const fakeScriptApp = createFakeScriptAppForAutomationTriggers_();
@@ -128,58 +163,56 @@ function runUnitTests() {
       assertTrue_(fakeScriptApp.getProjectTriggers_().indexOf(staleSyncAgain) < 0, 'stale duplicate sync trigger removed');
 
       const created = fakeScriptApp.getCreatedTriggers_();
-      assertEqual_(7, created.length, 'exact seven automation trigger builders');
-      const countByHandler = {};
-      created.forEach(function (trigger) {
-        const handler = trigger.getHandlerFunction();
-        if (!Object.prototype.hasOwnProperty.call(countByHandler, handler)) countByHandler[handler] = 0;
-        countByHandler[handler]++;
-      });
-      assertEqual_(1, countByHandler.pollPlaudChanges, 'poll trigger count');
-      assertEqual_(1, countByHandler.processTelegramQueue, 'telegram queue trigger count');
-      assertEqual_(5, countByHandler.syncSheetToNotion, 'weekday sync trigger count');
-
-      const pollTrigger = created.filter(function (trigger) { return trigger.getHandlerFunction() === 'pollPlaudChanges'; })[0];
-      const queueTrigger = created.filter(function (trigger) { return trigger.getHandlerFunction() === 'processTelegramQueue'; })[0];
-      assertEqual_(15, pollTrigger.everyMinutes, 'poll interval minutes');
-      assertEqual_(1, queueTrigger.everyMinutes, 'queue interval minutes');
-      assertTrue_(created.every(function (trigger) {
-        return ['pollPlaudChanges', 'syncSheetToNotion', 'processTelegramQueue'].indexOf(trigger.getHandlerFunction()) >= 0;
-      }), 'automation categories only');
-
-      const syncTriggers = created.filter(function (trigger) { return trigger.getHandlerFunction() === 'syncSheetToNotion'; });
-      const requiredWeekdays = [
-        fakeScriptApp.WeekDay.MONDAY,
-        fakeScriptApp.WeekDay.TUESDAY,
-        fakeScriptApp.WeekDay.WEDNESDAY,
-        fakeScriptApp.WeekDay.THURSDAY,
-        fakeScriptApp.WeekDay.FRIDAY
-      ];
-      const coveredWeekdays = {};
-      syncTriggers.forEach(function (trigger) {
-        assertEqual_(1, trigger.everyWeeks, 'sync repeats weekly');
-        assertEqual_(8, trigger.atHour, 'sync runs at 08:00 hour');
-        assertEqual_(30, trigger.nearMinute, 'sync runs at minute 30');
-        assertEqual_(CONFIG.TIMEZONE, trigger.timezone, 'sync uses configured timezone');
-        coveredWeekdays[trigger.onWeekDay] = true;
-      });
-      requiredWeekdays.forEach(function (weekday) {
-        assertTrue_(Object.prototype.hasOwnProperty.call(coveredWeekdays, weekday), 'weekday sync coverage ' + weekday);
-      });
-      assertEqual_(5, Object.keys(coveredWeekdays).length, 'exact 5 weekday schedules');
+      assertEqual_(0, created.length, 'no automation trigger builders for subscription-only mode');
     },
     function () {
-      const many = Array.from({ length: 30 }, function (_, index) { return { index: index }; });
-      const bounded = limitMeetingAnalysisResult_({
-        uncertainties: many,
-        project_updates: many,
-        ops_tasks: many,
-        schedules: many
-      });
-      assertEqual_(OPENAI_RESULT_LIMITS_.uncertainties, bounded.uncertainties.length, 'uncertainty result cap');
-      assertEqual_(OPENAI_RESULT_LIMITS_.projects, bounded.project_updates.length, 'project result cap');
-      assertEqual_(OPENAI_RESULT_LIMITS_.ops, bounded.ops_tasks.length, 'ops result cap');
-      assertEqual_(OPENAI_RESULT_LIMITS_.schedules, bounded.schedules.length, 'schedule result cap');
+      let lockRead = false;
+      withPatchedGlobal_(
+        'LockService',
+        {
+          getScriptLock: function () {
+            lockRead = true;
+            throw new Error('should not read lock service');
+          }
+        },
+        function () {
+          try {
+            pollPlaudChanges();
+          } catch (error) {
+            assertTrue_(false, 'pollPlaudChanges should fail-closed before lock access');
+          }
+        }
+      );
+      assertTrue_(!lockRead, 'pollPlaudChanges fail-closed no lock access');
+    },
+    function () {
+      let lockRead = false;
+      withPatchedGlobal_(
+        'LockService',
+        {
+          getScriptLock: function () {
+            lockRead = true;
+            throw new Error('should not read lock service');
+          }
+        },
+        function () {
+          try {
+            processTelegramQueue();
+          } catch (error) {
+            assertTrue_(false, 'processTelegramQueue should fail-closed before lock access');
+          }
+        }
+      );
+      assertTrue_(!lockRead, 'processTelegramQueue fail-closed no lock access');
+    },
+    function () {
+      let webhookError = false;
+      try {
+        setTelegramWebhook();
+      } catch (error) {
+        webhookError = String(error.message).indexOf('비활성화') >= 0;
+      }
+      assertTrue_(webhookError, 'setTelegramWebhook is disabled in fallback mode');
     },
     function () {
       assertEqual_('R2', normalizeSheetSyncState_({ version: 2, phase: 'schedules', afterId: 'R2' }).afterId,
@@ -233,6 +266,26 @@ function assertTrue_(condition, label) {
   if (!condition) throw new Error(label + ': assertion failed');
 }
 
+function getGlobalRoot_() {
+  if (typeof globalThis !== 'undefined') return globalThis;
+  return (function () { return this; })();
+}
+
+function withPatchedGlobal_(name, value, fn) {
+  const root = getGlobalRoot_();
+  const hasOwn = root && Object.prototype.hasOwnProperty.call(root, name);
+  const previous = root ? root[name] : undefined;
+  if (!root) throw new Error('Global root unavailable in test runtime');
+  root[name] = value;
+  try { return fn(); } finally {
+    if (hasOwn) {
+      root[name] = previous;
+    } else {
+      delete root[name];
+    }
+  }
+}
+
 function assertSheetsAdapterReadOnly_() {
   const adapterSource = [
     readSourceData_,
@@ -279,58 +332,6 @@ function createFakeScriptAppForAutomationTriggers_() {
       const index = projectTriggers.indexOf(trigger);
       if (index >= 0) projectTriggers.splice(index, 1);
       deletedTriggers.push(trigger);
-    },
-    newTrigger: function (handler) {
-      const spec = {
-        handler: handler
-      };
-      return {
-        timeBased: function () {
-          return this;
-        },
-        inTimezone: function (timezone) {
-          spec.timezone = timezone;
-          return this;
-        },
-        onWeekDay: function (weekday) {
-          spec.onWeekDay = weekday;
-          return this;
-        },
-        atHour: function (hour) {
-          spec.atHour = hour;
-          return this;
-        },
-        nearMinute: function (minute) {
-          spec.nearMinute = minute;
-          return this;
-        },
-        everyWeeks: function (weeks) {
-          spec.everyWeeks = weeks;
-          return this;
-        },
-        everyMinutes: function (minutes) {
-          spec.everyMinutes = minutes;
-          return this;
-        },
-        after: function (value) {
-          spec.after = value;
-          return this;
-        },
-        create: function () {
-          const trigger = {
-            getHandlerFunction: function () { return handler; },
-            everyMinutes: spec.everyMinutes,
-            everyWeeks: spec.everyWeeks,
-            atHour: spec.atHour,
-            nearMinute: spec.nearMinute,
-            onWeekDay: spec.onWeekDay,
-            timezone: spec.timezone,
-            after: spec.after
-          };
-          createdTriggers.push(trigger);
-          return trigger;
-        }
-      };
     },
     getCreatedTriggers_: function () {
       return createdTriggers.slice();

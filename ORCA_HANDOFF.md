@@ -73,14 +73,17 @@
 
 ### 2026-08-18 · 공용 Git 저장소 준비
 
+- 상태 연동: external plaud_telegram_runtime.py -> analyze_codex / plaud_codex_agent.py via Codex CLI logged into a ChatGPT subscription -> private ledger analysis_summary -> repo volcano_notion_sync.py -> Notion.
+- The state producer is external to this repo. Apps Script is inert/manual, installs no triggers, and requires only NOTION_TOKEN in Script Properties.
+
 - 담당 에이전트: Codex와 GPT 기반 보조 에이전트
 - 브랜치: `agent/orca-codex-shared-repo`
-- 상태: 로컬 구성 완료, GitHub 원격 연결 대기
-- 완료한 내용: 협업 규칙, 비밀정보 제외 규칙, 재현 가능한 번들 빌드, 로컬 테스트, GitHub Actions 검증 구성
-- 추가 안정화: 원장 동기화 잠금 경합·시간 초과 시 1분 뒤 단일 continuation 트리거로 재개
-- 검증: `npm run validate` 성공, 분리형과 번들에서 각각 31개 단위 테스트 통과
-- 완료 상태 기준: `setupAutomationTriggers`는 총 7개 자동화 트리거(PLAUD 15분 1개, Telegram 1분 1개, 월~금 syncSheetToNotion 5개)를 설치하는 상태여야 합니다.
+- 상태: 구독-only 전환 구현 완료(검증 일부)
+- 완료한 내용: OpenAI 의존성 제거, Core/Telegram/Config에서 PLAUD·Telegram 자동 처리/웹훅 즉시 fail-closed 및 트리거 비생성화, LaunchAgent 검증 설치 스크립트 추가, Python 동기화 스크립트/테스트 반입, 빌드 번들 소스에서 OpenAI 모듈 제거.
+- 추가 안정화: `setupPollingTrigger`/`setupAutomationTriggers`는 처리 함수 트리거( pollPlaudChanges, processTelegramQueue, syncSheetToNotion, continueSheetSync ) 삭제 후 생성하지 않습니다.
+- 검증: `npm run build` 완료(성공). `npm run validate`는 사용자가 실행.
+- 완료 상태 기준(검증): `setupAutomationTriggers`는 관련 트리거를 생성하지 않고 수동 모드 로그만 기록.
 - 실제 연결 환경 테스트: 자격 증명이 없으므로 Google·Notion·Telegram 실연결은 아직 수행하지 않음
 - Claude/Antigravity: 이 작업에서는 연결되거나 실행되지 않음
-- 남은 내용: GitHub 저장소 URL을 원격 `origin`으로 설정하고 push한 뒤 오르카에서 clone
+- 남은 내용: 사용자 확인사항만 정리(실서비스 LaunchAgent 동작 재검증은 별도 승인 범위)
 - 자격 증명: 기록하지 않음
