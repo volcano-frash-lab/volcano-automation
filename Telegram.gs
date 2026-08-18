@@ -3,51 +3,8 @@ const TELEGRAM_QUEUE_START_RESERVE_MS_ = 90 * 1000;
 const TELEGRAM_QUEUE_LOCK_WAIT_MS_ = 2000;
 
 function doPost(e) {
-  try {
-    const settings = getSettings_();
-    if (!settings.webhookKey || !settings.telegramAllowedChatId) {
-      return outputJson_({ ok: false, queued: false, error: 'webhook_not_configured' }, 503);
-    }
-    if (!e || !e.parameter || e.parameter.key !== settings.webhookKey) {
-      return outputJson_({ ok: false, queued: false, error: 'unauthorized' }, 403);
-    }
-    const payload = JSON.parse((e.postData && e.postData.contents) || '{}');
-    const message = payload.message || payload.channel_post || payload.edited_message || payload.edited_channel_post || {};
-    const chatId = message.chat && String(message.chat.id || '');
-    if (!chatId || chatId !== String(settings.telegramAllowedChatId)) {
-      return outputJson_({ ok: true, ignored: 'chat_not_allowed' }, 200);
-    }
-    const text = String(message.text || message.caption || '').trim();
-    if (!text) return outputJson_({ ok: true, ignored: 'empty' }, 200);
-    if (text.length < 40) return outputJson_({ ok: true, ignored: 'too_short' }, 200);
-    const sourceKey = 'telegram:' + chatId + ':' + String(message.message_id || hashText_(text).slice(0, 12));
-    const digest = hashText_(text);
-    if (isProcessed_(sourceKey, digest)) return outputJson_({ ok: true, duplicate: true }, 200);
-    const record = {
-      id: sourceKey,
-      recordingId: sourceKey,
-      title: 'Telegram PLAUD 요약',
-      url: telegramMessageUrl_(message),
-      recordedAt: message.date ? new Date(Number(message.date) * 1000).toISOString() : isoNow_(),
-      lastEditedAt: isoNow_(),
-      text: text.slice(0, CONFIG.MAX_WEBHOOK_TEXT_CHARS)
-    };
-    const queueResult = enqueueTelegramRecord_(record, digest);
-    return outputJson_(Object.assign({ ok: true }, queueResult), 200);
-  } catch (error) {
-    const detail = String(error.message || error);
-    console.error('Telegram 웹훅 대기열 등록 실패: ' + (error && error.stack ? error.stack : detail));
-    // Apps Script ContentService 웹 앱은 실제 HTTP status code를 설정할 API가 없다.
-    // 따라서 outputJson_의 status는 응답 body의 애플리케이션 상태이며 실제 HTTP 응답은 200일 수 있다.
-    return outputJson_({
-      ok: false,
-      queued: false,
-      retryable: true,
-      error: 'queue_registration_failed',
-      detail: detail.slice(0, 500),
-      actualHttpStatusMayBe200: true
-    }, 503);
-  }
+  console.log('Telegram 웹훅 수신은 수동 폴백 모드에서 비활성화되어 있습니다.');
+  return outputJson_({ ok: false, queued: false, error: 'webhook_disabled_for_manual_fallback' }, 200);
 }
 
 function enqueueTelegramRecord_(record, digest) {
@@ -68,50 +25,7 @@ function enqueueTelegramRecord_(record, digest) {
 }
 
 function processTelegramQueue() {
-  const deadlineMs = Date.now() + TELEGRAM_QUEUE_RUN_LIMIT_MS_;
-  const workerLock = LockService.getScriptLock();
-  if (!workerLock.tryLock(1000)) return;
-  setNotionRunDeadline_(deadlineMs);
-  try {
-    validateSettings_();
-    const claimed = nextTelegramQueueItem_();
-    if (!claimed) return;
-    const key = claimed.key;
-    const item = claimed.item;
-    if (isProcessed_(item.record.id, item.digest)) {
-      deleteTelegramQueueItemIfCurrent_(key, item.digest);
-      return;
-    }
-    if (!hasTelegramQueueRunTime_(deadlineMs, TELEGRAM_QUEUE_START_RESERVE_MS_)) {
-      console.warn('Telegram 대기열 작업 시작에 필요한 90초가 남지 않아 다음 실행으로 넘깁니다.');
-      return;
-    }
-    try {
-      const sourceData = readSourceData_();
-      const analysis = analyzeMeeting_(item.record, sourceData);
-      if (!isTelegramQueueItemCurrent_(key, item.digest)) {
-        console.warn('Telegram 메시지가 처리 중 수정되어 이전 digest 반영을 건너뜁니다: ' + item.record.id);
-        return;
-      }
-      const report = applyAnalysis_(item.record, analysis, sourceData);
-      rememberProcessed_(item.record.id, item.digest);
-      deleteTelegramQueueItemIfCurrent_(key, item.digest);
-      sendTelegramReport_(formatReport_(report, item.record.title));
-    } catch (error) {
-      if (error && error.code === 'PLAUD_DEADLINE') {
-        console.warn(error.message);
-        return;
-      }
-      const failure = recordTelegramQueueFailure_(key, item, error);
-      if (failure && failure.dead) {
-        sendTelegramReport_('PLAUD Telegram 처리 5회 실패. Apps Script 실행 로그 확인 필요: ' + failure.item.lastError);
-      }
-      console.error(error && error.stack ? error.stack : error);
-    }
-  } finally {
-    clearNotionRunDeadline_();
-    workerLock.releaseLock();
-  }
+  console.log('processTelegramQueue는 Mac mini 구독 런타임이 권한합니다. Apps Script는 수동 폴백 모드입니다.');
 }
 
 function withTelegramQueueLock_(fn) {
@@ -233,18 +147,5 @@ function formatReport_(report, title) {
 }
 
 function setTelegramWebhook() {
-  const settings = getSettings_();
-  if (!settings.telegramBotToken) throw new Error('TELEGRAM_BOT_TOKEN을 먼저 설정하세요.');
-  if (!settings.webhookKey) throw new Error('WEBHOOK_KEY를 먼저 설정하세요.');
-  if (!settings.telegramAllowedChatId) throw new Error('TELEGRAM_ALLOWED_CHAT_ID를 먼저 설정하세요.');
-  const webAppUrl = ScriptApp.getService().getUrl();
-  if (!webAppUrl) throw new Error('먼저 웹 앱으로 배포하세요.');
-  const webhookUrl = webAppUrl + '?key=' + encodeURIComponent(settings.webhookKey);
-  const response = UrlFetchApp.fetch('https://api.telegram.org/bot' + settings.telegramBotToken + '/setWebhook', {
-    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
-    payload: JSON.stringify({ url: webhookUrl, max_connections: 1, allowed_updates: ['message', 'channel_post', 'edited_message', 'edited_channel_post'] })
-  });
-  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) throw new Error('Telegram setWebhook 실패: ' + response.getContentText());
-  console.log(response.getContentText());
-  return response.getContentText();
+  throw new Error('Telegram webhook 설치는 수동 폴백 모드에서 비활성화되어 있습니다.');
 }

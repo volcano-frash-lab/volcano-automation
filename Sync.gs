@@ -1,23 +1,38 @@
 const SHEET_SYNC_STATE_PROPERTY_ = 'SHEET_SYNC_STATE_V2';
 const SHEET_SYNC_RETRY_PROPERTY_ = 'SHEET_SYNC_RETRY_COUNT';
-const SHEET_SYNC_CONTINUATION_AT_PROPERTY_ = 'SHEET_SYNC_CONTINUATION_AT';
 const SHEET_SYNC_MAX_TRANSIENT_RETRIES_ = 5;
 
 function syncSheetToNotion() {
   const deadlineMs = Date.now() + CONFIG.RUN_BUDGET_MS;
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) {
-    scheduleSheetSyncContinuation_();
-    return { deferred: true };
-  }
-  setNotionRunDeadline_(deadlineMs);
+  let lockAcquired = false;
   let props = null;
+  let state = { version: 2, phase: 'projects', afterId: '' };
+  try {
+    props = PropertiesService.getScriptProperties();
+    state = normalizeSheetSyncState_(safely_(function () {
+      return JSON.parse(props.getProperty(SHEET_SYNC_STATE_PROPERTY_) || 'null');
+    }, null));
+  } catch (error) {
+    props = null;
+  }
+
+  if (!lock.tryLock(1000)) {
+    if (props) {
+      const retryCount = Number(props.getProperty(SHEET_SYNC_RETRY_PROPERTY_) || 0) + 1;
+      props.setProperty(SHEET_SYNC_STATE_PROPERTY_, JSON.stringify(state));
+      props.setProperty(SHEET_SYNC_RETRY_PROPERTY_, String(retryCount));
+    }
+    return { deferred: true, phase: state.phase, afterId: state.afterId };
+  }
+
+  lockAcquired = true;
+  setNotionRunDeadline_(deadlineMs);
   try {
     validateSettings_();
-    props = PropertiesService.getScriptProperties();
     props.deleteProperty('SHEET_SYNC_STATE_V1');
     const sourceData = readSourceData_();
-    const state = normalizeSheetSyncState_(safely_(function () {
+    state = normalizeSheetSyncState_(safely_(function () {
       return JSON.parse(props.getProperty(SHEET_SYNC_STATE_PROPERTY_) || 'null');
     }, null));
     const counts = { projectsCreated: 0, projectsUpdated: 0, schedulesCreated: 0, schedulesUpdated: 0, conflicts: [], invalidSchedules: [] };
@@ -36,8 +51,9 @@ function syncSheetToNotion() {
         if (!projectId || (state.afterId && compareSyncId_(projectId, state.afterId) <= 0)) continue;
         if (!hasPlaudRunTime_(deadlineMs, 15000)) {
           props.setProperty(SHEET_SYNC_STATE_PROPERTY_, JSON.stringify({ version: 2, phase: 'projects', afterId: state.afterId }));
-          scheduleSheetSyncContinuation_();
-          return counts;
+          const retryCount = Number(props.getProperty(SHEET_SYNC_RETRY_PROPERTY_) || 0) + 1;
+          props.setProperty(SHEET_SYNC_RETRY_PROPERTY_, String(retryCount));
+          return { deferred: true, phase: 'projects', afterId: state.afterId, retryCount: retryCount };
         }
         const existing = findProjectPage_(projectId, row['채널명']);
         const desired = sheetProjectProperties_(row);
@@ -81,8 +97,9 @@ function syncSheetToNotion() {
       if (!scheduleId || (state.afterId && compareSyncId_(scheduleId, state.afterId) <= 0)) continue;
       if (!hasPlaudRunTime_(deadlineMs, 15000)) {
         props.setProperty(SHEET_SYNC_STATE_PROPERTY_, JSON.stringify({ version: 2, phase: 'schedules', afterId: state.afterId }));
-        scheduleSheetSyncContinuation_();
-        return counts;
+        const retryCount = Number(props.getProperty(SHEET_SYNC_RETRY_PROPERTY_) || 0) + 1;
+        props.setProperty(SHEET_SYNC_RETRY_PROPERTY_, String(retryCount));
+        return { deferred: true, phase: 'schedules', afterId: state.afterId, retryCount: retryCount };
       }
       if (!isoLocal_(row['시작일시'])) {
         counts.invalidSchedules.push(scheduleId + ': 시작일시 확인 필요');
@@ -117,7 +134,6 @@ function syncSheetToNotion() {
     props.deleteProperty(SHEET_SYNC_STATE_PROPERTY_);
     props.deleteProperty(SHEET_SYNC_RETRY_PROPERTY_);
     props.setProperty('LAST_SHEET_SYNC', isoNow_());
-    removeSheetSyncContinuationTriggers_();
     if (counts.projectsCreated || counts.projectsUpdated || counts.schedulesCreated || counts.schedulesUpdated || counts.conflicts.length || counts.invalidSchedules.length) {
       sendTelegramReport_([
         '원장→Notion 동기화 완료',
@@ -131,53 +147,23 @@ function syncSheetToNotion() {
   } catch (error) {
     if (isTransientSheetSyncError_(error)) {
       props = props || PropertiesService.getScriptProperties();
+      props.setProperty(SHEET_SYNC_STATE_PROPERTY_, JSON.stringify(state));
       const retryCount = Number(props.getProperty(SHEET_SYNC_RETRY_PROPERTY_) || 0) + 1;
       if (retryCount <= SHEET_SYNC_MAX_TRANSIENT_RETRIES_) {
         props.setProperty(SHEET_SYNC_RETRY_PROPERTY_, String(retryCount));
-        scheduleSheetSyncContinuation_();
         console.warn('원장 동기화 일시 오류로 재개 예약 (' + retryCount + '/' +
           SHEET_SYNC_MAX_TRANSIENT_RETRIES_ + '): ' + String(error && (error.message || error)));
         return { deferred: true, retryCount: retryCount };
       }
       props.deleteProperty(SHEET_SYNC_RETRY_PROPERTY_);
-      removeSheetSyncContinuationTriggers_();
     }
     throw error;
   } finally {
     clearNotionRunDeadline_();
-    lock.releaseLock();
+    if (lockAcquired) {
+      lock.releaseLock();
+    }
   }
-}
-
-function continueSheetSync() {
-  syncSheetToNotion();
-}
-
-function scheduleSheetSyncContinuation_() {
-  const leaseLock = LockService.getUserLock();
-  if (!leaseLock.tryLock(5000)) return false;
-  try {
-    const props = PropertiesService.getScriptProperties();
-    const now = Date.now();
-    const scheduledAt = Number(props.getProperty(SHEET_SYNC_CONTINUATION_AT_PROPERTY_) || 0);
-    const triggers = ScriptApp.getProjectTriggers().filter(function (trigger) {
-      return trigger.getHandlerFunction() === 'continueSheetSync';
-    });
-    if (triggers.length === 1 && scheduledAt > now) return true;
-    triggers.forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
-    ScriptApp.newTrigger('continueSheetSync').timeBased().after(60000).create();
-    props.setProperty(SHEET_SYNC_CONTINUATION_AT_PROPERTY_, String(now + 60000));
-    return true;
-  } finally {
-    leaseLock.releaseLock();
-  }
-}
-
-function removeSheetSyncContinuationTriggers_() {
-  ScriptApp.getProjectTriggers().forEach(function (trigger) {
-    if (trigger.getHandlerFunction() === 'continueSheetSync') ScriptApp.deleteTrigger(trigger);
-  });
-  PropertiesService.getScriptProperties().deleteProperty(SHEET_SYNC_CONTINUATION_AT_PROPERTY_);
 }
 
 function normalizeSheetSyncState_(state) {

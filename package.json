@@ -5,8 +5,9 @@
   "description": "Google Sheets read-only source and PLAUD meeting notes to Notion automation",
   "scripts": {
     "build": "node build-bundle.js",
+    "check:bundle": "node build-bundle.js --check",
     "test": "node test-local.js",
-    "validate": "npm run build && npm test && node -e \"JSON.parse(require('node:fs').readFileSync('appsscript.json','utf8')); console.log('appsscript.json 확인 완료')\""
+    "validate": "npm run check:bundle && npm test && /usr/bin/python3 -m unittest discover -s scripts/tests -p \"test_*.py\" -q && node test-local.js && /usr/bin/python3 -m json.tool appsscript.json >/dev/null && bash -n scripts/install_volcano_notion_sync.sh && ./scripts/install_volcano_notion_sync.sh --dry-run"
   },
   "engines": {
     "node": ">=18"
